@@ -1,0 +1,112 @@
+#!/bin/bash
+
+uefi_partition=/dev/vda1
+root_partition=/dev/vda2
+
+interface=
+wlan_ssid=
+wlan__key=
+network=150.95.142.0/23
+
+hostname=honifuwa
+username=kuroclef
+
+ssh_port=22
+
+mkfs.ext4 "$root_partition"
+mount -o noatime,commit=60 "$root_partition" /mnt
+
+mkdir -p /mnt/boot
+#mkfs.fat -F32 "$uefi_partition"
+mount "$uefi_partition" /mnt/boot
+
+tee /etc/pacman.d/mirrorlist <<\EOF
+Server = http://ftp.tsukuba.wide.ad.jp/Linux/archlinux/$repo/os/x86_64
+Server = https://ftp.jaist.ac.jp/pub/Linux/ArchLinux/$repo/os/x86_64
+Server = http://ftp.jaist.ac.jp/pub/Linux/ArchLinux/$repo/os/x86_64
+Server = https://mirrors.cat.net/archlinux/$repo/os/x86_64
+Server = http://mirrors.cat.net/archlinux/$repo/os/x86_64
+EOF
+
+xargs pacstrap /mnt base-devel <<EOF
+base
+bash-completion
+certbot
+dhcpcd
+emacs-nox
+git
+grub
+imagemagick
+jq
+linux
+linux-firmware
+man-db
+man-pages
+mpc
+mpd
+neofetch
+nginx-mainline
+npm
+openssh
+pacman-contrib
+pkgfile
+python-pip
+rng-tools
+ruby
+sl
+texlive-langjapanese
+texlive-latexextra
+vim
+zsh
+EOF
+
+genfstab /mnt >/mnt/etc/fstab
+
+arch-chroot /mnt /bin/bash <<EOT
+echo -e 'en_US.UTF-8 UTF-8\nja_JP.UTF-8 UTF-8' >/etc/locale.gen
+echo -e 'LANG=en_US.UTF-8\nLC_COLLATE=C' >/etc/locale.conf
+echo KEYMAP=jp106 >/etc/vconsole.conf
+echo "$hostname" >/etc/hostname
+locale-gen
+
+hwclock -wu
+ln -sf /usr/share/zoneinfo/Asia/Tokyo /etc/localtime
+timedatectl set-ntp true
+
+sed -i -f - /etc/default/grub <<EOF
+/^GRUB_TIMEOUT/s/5/0/
+EOF
+
+grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=arch --recheck
+grub-mkconfig -o /boot/grub/grub.cfg
+mkdir /boot/EFI/boot
+cp /boot/EFI/arch/grubx64.efi /boot/EFI/boot/bootx64.efi
+
+tee /etc/iptables/iptables.rules <<EOF
+*filter
+:INPUT DROP [0:0]
+:FORWARD DROP [0:0]
+:OUTPUT ACCEPT [0:0]
+-A INPUT -i lo -j ACCEPT
+-A INPUT -4 -s $network -j ACCEPT
+-A INPUT -6 -s fe80::/64 -j ACCEPT
+-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT
+-A INPUT -p tcp -m state --state NEW -m tcp --dport 80 -j ACCEPT
+-A INPUT -p tcp -m state --state NEW -m tcp --dport 443 -j ACCEPT
+-A INPUT -p tcp -m state --state NEW -m tcp --dport $ssh_port -j ACCEPT
+COMMIT
+EOF
+
+ln -sf /etc/iptables/ip{,6}tables.rules
+
+systemctl enable dhcpcd.service
+systemctl enable ip{,6}tables.service
+
+sed -ri -f - /etc/sudoers <<EOF
+/"HOME"|%wheel/s/# //
+EOF
+
+useradd -mG wheel -s /bin/zsh "$username"
+
+echo -e 'y\ny' | pacman -Scc
+EOT
