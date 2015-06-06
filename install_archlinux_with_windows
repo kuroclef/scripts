@@ -1,0 +1,145 @@
+#!/bin/bash
+
+uefi_partition=/dev/sda1
+root_partition=/dev/sda5
+
+interface=wlp4s0
+wlan_ssid=
+wlan__key=
+network=192.168.1.0/24
+
+hostname=honifuwa
+username=kuroclef
+
+mkfs.ext4 "$root_partition"
+mount -o noatime,commit=60 "$root_partition" /mnt
+
+mkdir -p /mnt/boot
+#mkfs.fat -F32 "$uefi_partition"
+mount "$uefi_partition" /mnt/boot
+
+tee /etc/pacman.d/mirrorlist <<\EOF
+Server = http://ftp.tsukuba.wide.ad.jp/Linux/archlinux/$repo/os/x86_64
+Server = https://ftp.jaist.ac.jp/pub/Linux/ArchLinux/$repo/os/x86_64
+Server = http://ftp.jaist.ac.jp/pub/Linux/ArchLinux/$repo/os/x86_64
+Server = https://mirrors.cat.net/archlinux/$repo/os/x86_64
+Server = http://mirrors.cat.net/archlinux/$repo/os/x86_64
+EOF
+
+xargs pacstrap /mnt base-devel <<EOF
+alacritty
+alsa-utils
+base
+dhcpcd
+discord
+efibootmgr
+feh
+firefox
+gammastep
+git
+grim
+grub
+gvim
+i3status-rust
+ibus-skk
+imagemagick
+intel-ucode
+jq
+light
+linux
+linux-firmware
+man-db
+man-pages
+mpc
+mpd
+neofetch
+nginx-mainline
+openssh
+pacman-contrib
+pkgfile
+pulseaudio
+rofi
+slurp
+sway
+swayidle
+upower
+wireless_tools
+wpa_supplicant
+xdg-desktop-portal-wlr
+xf86-video-intel
+xorg-xwayland
+zsh
+EOF
+
+genfstab /mnt >/mnt/etc/fstab
+
+arch-chroot /mnt /bin/bash <<EOT
+echo -e 'en_US.UTF-8 UTF-8\nja_JP.UTF-8 UTF-8' >/etc/locale.gen
+echo -e 'LANG=en_US.UTF-8\nLC_COLLATE=C' >/etc/locale.conf
+echo KEYMAP=jp106 >/etc/vconsole.conf
+echo "$hostname" >/etc/hostname
+locale-gen
+
+hwclock -wu
+ln -sf /usr/share/zoneinfo/Asia/Tokyo /etc/localtime
+systemctl enable systemd-timesyncd.service
+
+sed -i -f - /etc/default/grub <<EOF
+/^GRUB_TIMEOUT/s/5/3/
+EOF
+
+tee /etc/grub.d/39_windows <<EOF
+#!/bin/sh
+exec tail -n +3 \\\$0
+if [ "\\\$grub_platform" == efi ]; then
+  menuentry "Windows 10" {
+    insmod part_gpt
+    insmod fat
+    insmod search_fs_uuid
+    insmod chain
+    search --fs-uuid --set=root \$(grub-probe --target=hints_string /boot/EFI/Microsoft/Boot/bootmgfw.efi) \$(grub-probe --target=fs_uuid /boot/EFI/Microsoft/Boot/bootmgfw.efi)
+    chainloader /EFI/Microsoft/Boot/bootmgfw.efi
+  }
+fi
+EOF
+chmod +x /etc/grub.d/39_windows
+
+grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=arch --recheck
+grub-mkconfig -o /boot/grub/grub.cfg
+
+if [ "$wlan_ssid" ] && [ "$wlan__key" ]; then
+tee /etc/wpa_supplicant/wpa_supplicant-"$interface".conf <<EOF
+network={
+  ssid="$wlan_ssid"
+  psk="$wlan__key"
+}
+EOF
+systemctl enable wpa_supplicant@"$interface".service
+fi
+
+tee /etc/iptables/iptables.rules <<EOF
+*filter
+:INPUT DROP [0:0]
+:FORWARD DROP [0:0]
+:OUTPUT ACCEPT [0:0]
+-A INPUT -i lo -j ACCEPT
+-A INPUT -4 -s $network -j ACCEPT
+-A INPUT -6 -s fe80::/64 -j ACCEPT
+-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT
+COMMIT
+EOF
+
+ln -sf /etc/iptables/ip{,6}tables.rules
+
+systemctl enable dhcpcd.service
+systemctl enable ip{,6}tables.service
+
+sed -ri -f - /etc/sudoers <<EOF
+/"HOME"|%wheel|[^!]REBOOT/s/# //
+/NOPASSWD/s/ALL$/REBOOT/
+EOF
+
+useradd -mG wheel -s /bin/zsh "$username"
+
+echo -e 'y\ny' | pacman -Scc
+EOT

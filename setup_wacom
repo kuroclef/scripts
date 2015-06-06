@@ -1,0 +1,13 @@
+#!/bin/bash
+
+sudo pacman -Sy --noconfirm --needed xf86-input-wacom
+
+sudo tee /etc/X11/xorg.conf.d/wacom.conf <<EOF
+Section "InputClass"
+  Identifier    "Wacom"
+  MatchDriver   "wacom"
+  MatchProduct  "Pen"
+  Option        "PressCurve" "0,50,50,100"
+  Option        "Threshold"  "1"
+EndSection
+EOF
