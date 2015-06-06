@@ -1,0 +1,115 @@
+#!/bin/bash
+
+uefi_partition=/dev/sda1
+root_partition=/dev/sda2
+
+interface=wlp4s0
+wlan_ssid=
+wlan__key=
+network=192.168.1.0/24
+
+hostname=honifuwa
+username=kuroclef
+
+mkfs.ext4 "$root_partition"
+mkfs.fat -F32 "$uefi_partition"
+
+mount -o noatime,commit=60 "$root_partition" /mnt
+mount --mkdir "$uefi_partition" /mnt/boot
+
+tee /etc/pacman.d/mirrorlist <<\EOF
+Server = http://ftp.tsukuba.wide.ad.jp/Linux/archlinux/$repo/os/x86_64
+Server = https://ftp.jaist.ac.jp/pub/Linux/ArchLinux/$repo/os/x86_64
+Server = http://ftp.jaist.ac.jp/pub/Linux/ArchLinux/$repo/os/x86_64
+Server = https://mirrors.cat.net/archlinux/$repo/os/x86_64
+Server = http://mirrors.cat.net/archlinux/$repo/os/x86_64
+EOF
+
+xargs pacstrap /mnt <<EOF
+base
+dhcpcd
+efibootmgr
+git
+grub
+intel-ucode
+linux
+linux-firmware
+man-db
+man-pages
+neofetch
+nginx-mainline
+openssh
+pacman-contrib
+pkgfile
+sudo
+vim
+wireless_tools
+wpa_supplicant
+zsh
+EOF
+
+genfstab /mnt >/mnt/etc/fstab
+
+arch-chroot /mnt /bin/bash <<EOT
+ln -sf /usr/share/zoneinfo/Asia/Tokyo /etc/localtime
+hwclock --systohc
+systemctl enable systemd-timesyncd.service
+
+echo -e 'en_US.UTF-8 UTF-8\nja_JP.UTF-8 UTF-8' >/etc/locale.gen
+locale-gen
+
+echo -e 'LANG=en_US.UTF-8\nLC_COLLATE=C' >/etc/locale.conf
+echo KEYMAP=jp106 >/etc/vconsole.conf
+echo "$hostname" >/etc/hostname
+
+sed -i -f - /etc/default/grub <<EOF
+/^GRUB_TIMEOUT/s/5/0/
+EOF
+
+grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=arch --recheck
+grub-mkconfig -o /boot/grub/grub.cfg
+
+if [ "$wlan_ssid" ] && [ "$wlan__key" ]; then
+tee /etc/wpa_supplicant/wpa_supplicant-"$interface".conf <<EOF
+network={
+  ssid="$wlan_ssid"
+  psk="$wlan__key"
+}
+EOF
+systemctl enable wpa_supplicant@"$interface".service
+systemctl enable dhcpcd@"$interface".service
+fi
+
+tee /etc/iptables/iptables.rules <<EOF
+*filter
+:INPUT DROP [0:0]
+:FORWARD DROP [0:0]
+:OUTPUT ACCEPT [0:0]
+-A INPUT -i lo -j ACCEPT
+-A INPUT -4 -s $network -j ACCEPT
+-A INPUT -6 -s fe80::/64 -j ACCEPT
+-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT
+COMMIT
+EOF
+
+ln -sf /etc/iptables/ip{,6}tables.rules
+systemctl enable ip{,6}tables.service
+
+sed -ri -f - /etc/sudoers <<EOF
+/"HOME"|%wheel/s/# //
+EOF
+
+useradd -mG wheel -s /bin/zsh "$username"
+
+echo -e 'y\ny' | pacman -Scc
+EOT
+
+#pacman -Qm
+#gconf 3.2.6+11+g07808097-10
+#skk-jisyo-neologd 20200916-1
+#spotify 1:1.1.68.632-1
+#ttf-cica 5.0.2-1
+#ttf-koruri 20180915-1
+#ttf-ricty 4.1.1b-1
+#unityhub 2.4.3-3
+#unzip-iconv 6.0-9
